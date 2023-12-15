@@ -7,45 +7,112 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Auth;
 use App\Models\User;
-// use App\Models\Role;
+use App\Models\roles;
 use Validator;
+
+use Illuminate\Support\Facades\Log;
+use \Illuminate\Support\Str;
+use Illuminate\Http\JsonResponse;
 
 class PassportAuthController extends Controller
 {
-    public function login(Request $request)
+    public function sendResponse($result, $message)
     {
-        $input = $request->all();
+    	$response = [
+            'success' => true,
+            'data'    => $result,
+            'message' => $message,
+        ];
 
-        Auth::attempt($input);
 
-        $user = Auth::user();
-        
-        $token = $user->createToken('Laravel10PassportAuth')->accessToken;
-        return Response(['status' => 200,'token' => $token],200);
+        return response()->json($response, 200);
+    }
+
+
+    /**
+     * return error response.
+     *
+     * @return \Illuminate\Http\Response
+     */
+    public function sendError($error, $errorMessages = [], $code = 404)
+    {
+    	$response = [
+            'success' => false,
+            'message' => $error,
+        ];
+
+
+        if(!empty($errorMessages)){
+            $response['data'] = $errorMessages;
+        }
+
+
+        return response()->json($response, $code);
+    }
+
+    private function extractBasicAuthData(Request $request)
+    {
+        $header = $request->header('Authorization');
+        if(!Str::startsWith($header, 'Basic ')){
+            return null;
+        }
+
+        $encoded = explode('Basic ', $header);
+        $decoded = base64_decode($encoded[1]);
+        list($email, $password) = explode(":", $decoded);
+
+        $dataDecoded = $request->all(); //only name should be there
+        $dataDecoded['email'] = $email;
+        $dataDecoded['password'] = $password;
+
+        return $dataDecoded;
+    }
+
+    public function login(Request $request): JsonResponse
+    {
+        $dataDecoded = $this->extractBasicAuthData($request);
+        if($dataDecoded == null) return $this->sendError('Not valid Basic Auth');
+
+        if(Auth::attempt(['email' => $dataDecoded['email'], 'password' => $dataDecoded['password']])){ 
+            $user = Auth::user(); 
+            $success['token'] =  $user->createToken('MyApp')-> accessToken; 
+            $success['name'] =  $user->name;
+            $success['idUser'] = $user->id;
+   
+            return $this->sendResponse($success, 'User login successfully.');
+        } 
+        else{ 
+            return $this->sendError('Unauthorised.', ['error'=>'Unauthorised']);
+        } 
     }
 
     public function register(Request $request)
     {
-        $request->validate([
-            'name' => 'required|min:4',
+        $dataDecoded = $this->extractBasicAuthData($request);
+
+        if($dataDecoded == null) return $this->sendError('Not valid Basic Auth');
+
+        $validator = Validator::make($dataDecoded, [
+            'name' => 'required',
             'email' => 'required|email',
-            'password' => 'required|min:8',
+            'password' => 'required',
         ]);
+     
+        if($validator->fails()){
+            return $this->sendError('Validation Error.', $validator->errors());       
+        }
+     
+        $input = $dataDecoded;
+        $input['password'] = bcrypt($input['password']);
 
-        $user = User::create([
-            'name' => $request->name,
-            'email' => $request->email,
-            'password' => bcrypt($request->password),
-        ]);
-
-        // Autenticar al nuevo usuario
-        Auth::login($user);
-
-        // Generar token de acceso
-        $token = $user->createToken('Laravel10PassportAuth')->accessToken;
-
-        // Devolver la respuesta con el token
-        return response(['status' => 200, 'token' => $token], 200);
+        try {
+            $user = User::create($input);
+            $success['token'] =  $user->createToken('MyApp')->accessToken;
+            $success['name'] =  $user->name;
+            return $this->sendResponse($success, 'User register successfully.');
+        } catch (\Illuminate\Database\QueryException $exception) {
+            return $this->sendError('User Register Error.', $exception->errorInfo);
+        }
     }
 
     public function getUserDetail()
@@ -95,17 +162,16 @@ class PassportAuthController extends Controller
     public function update(Request $request, $id)
     {
         $input = $request->all();
-        $validator = Validator::make($input, [
-        'name' => 'required',
-        'email' => 'required',
-        'password' => 'required'
-        ]);
-        if ($validator->fails()) {
-        return $this->sendError('Validation Error.', $validator->errors());
+        $users = User::find($id);
+        if ($input['name']){
+            $users->name = $input['name'];
         }
-        $users->name = $input['name'];
-        $users->email = $input['email'];
-        $users->password = $input['password'];
+        if ($input['email']){
+            $users->email = $input['email'];
+        }
+        if ($input['password']){
+            $users->password = $input['password'] = bcrypt($input['password']);
+        }
         // $product->save();
         $users->save();
         return response()->json([
@@ -117,98 +183,97 @@ class PassportAuthController extends Controller
 
     public function destroy($id)
     {
-        $users->delete();
+        $user = User::find($id);
+        if ($user) {
+            $user->delete();
+        }
         return response()->json([
             "success" => true,
             "message" => "User deleted successfully.",
-            "data" => $users
         ]);
     }
-/*
-    public function roles($id){
-        $user = User::find($id);
 
-        $userRoles = [];
-        
-        foreach ($user->roles as $role) {
-            $userRoles[] = [
-                'name' => $role->name,
-            ];
-        }
-
-        //devolver los roles como JSON
-        return response()->json(['user_roles' => $userRoles]);
-    }
-
-
-    public function assignRoles(Request $request, $id)
+    public function addRole($userId,$roleId)
     {
-        // Validar la solicitud
-        $request->validate([
-            'role_ids' => 'required|array',
-        ]);
+        // Find the user by ID
+        $user = User::find($userId);
 
-        // Encontrar el usuario por su ID
-        $user = User::find($id);
+        // Find the role by ID
+        $role = roles::find($roleId);
 
-        // Asignar roles al usuario
-        foreach ($request->input('role_ids') as $role_id) {
-            $role = Role::find($role_id);
-            
-            if ($role) {
-                $user->roles()->attach($role->id);
-            }
+        // Check if the user and role are found
+        if ($user === null) {
+            return response()->json([
+                "success" => false,
+                "message" => "User not found.",
+                "message" => $userId,
+            ]);
         }
+
+        if ($role === null) {
+            return response()->json([
+                "success" => false,
+                "message" => "Rol not found.",
+                "message" => $roleId,
+        ]);
+    }
+
+        // Attach the role to the user
+        $user->roles()->attach($role);
+
         return response()->json([
-            'message' => 'Roles asignados correctamente'
+            "success" => true,
+            "message" => "Rol added correctly."
         ]);
     }
 
-    public function modifyRoles(Request $request, $id)
+    public function removeRole($userId, $roleId)
     {
-        // Validar la solicitud según tus necesidades
-        $request->validate([
-            'role_ids' => 'required|array',
-        ]);
+        $user = User::find($userId);
+        $role = roles::find($roleId);
 
-        // Encontrar el usuario por su ID
-        $user = User::find($id);
-
-        // Modificar roles del usuario
-        $roleIds = $request->input('role_ids');
-
-        // Opción 1: sync (reemplazar roles existentes con los proporcionados)
-        $user->roles()->sync($roleIds);
-
-        // Opción 2: syncWithoutDetaching (agregar nuevos roles sin eliminar los existentes)
-        // $user->roles()->syncWithoutDetaching($roleIds);
-
-        // Puedes devolver una respuesta JSON
-        return response()->json(['message' => 'Roles modificados correctamente']);
-    }
-
-    public function deleteRole(Request $request, $id, $roleId)
-    {
-        // Validar la solicitud según tus necesidades
-        // ...
-
-        // Encontrar el usuario por su ID
-        $user = User::find($id);
-
-        // Encontrar el rol por su ID
-        $role = Role::find($roleId);
-
-        // Verificar si el usuario y el rol existen
-        if ($user && $role) {
-            // Eliminar el rol del usuario
-            $user->roles()->detach($role->id);
-
-            // Puedes devolver una respuesta JSON
-            return response()->json(['message' => 'Rol eliminado correctamente']);
-        } else {
-            // Puedes devolver una respuesta JSON indicando que el usuario o el rol no fueron encontrados
-            return response()->json(['message' => 'Usuario o rol no encontrados'], 404);
+        // Check if the user and role are found
+        if ($user === null) {
+            return response()->json([
+                "success" => false,
+                "message" => "User not found.",
+                "message" => $userId,
+            ]);
         }
+
+        if ($role === null) {
+            return response()->json([
+                "success" => false,
+                "message" => "Roe not found."
+        ]);
+        }
+        $user->roles()->detach($role);
+
+        return response()->json([
+            "success" => true,
+            "message" => "Rol removed correctly"
+        ]);
+        
     }
-    */
+
+    public function showRoles($userId)
+    {
+        $user = User::find($userId);
+        $roles = $user->roles;
+
+        // Check if the user and role are found
+        if ($user === null) {
+            return response()->json([
+                "success" => false,
+                "message" => "User not found.",
+                "message" => $userId,
+            ]);
+        }
+
+        return response()->json([
+            "success" => true,
+            "message" => "User roles correctly",
+            "data" => $roles
+        ]);
+    }
 }

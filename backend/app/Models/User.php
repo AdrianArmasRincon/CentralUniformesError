@@ -40,7 +40,11 @@ class User extends Authenticatable
      * @var array<string, string>
      */
     protected $casts = [
-        'email_verified_at' => 'datetime',
-        'password' =>  'hashed',
+        // 'email_verified_at' => 'datetime',
+        // 'password' =>  'hashed',
     ];
+    //Many to many r
+    public function roles(): BelongsToMany{
+        return $this->belongsToMany(roles::class, 'role_user', 'user_id', 'role_id');
+    }
 }
